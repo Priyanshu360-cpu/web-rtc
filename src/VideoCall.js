@@ -102,48 +102,71 @@ const VideoCall = () => {
         return pc;
     };
 
+    const getLocalStream = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+            }
+    
+            return stream;
+        } catch (error) {
+            console.error("🚨 Camera/Microphone Error:", error);
+    
+            if (error.name === "NotAllowedError") {
+                alert("⚠️ Camera/Microphone access denied. Please allow permissions.");
+            } else if (error.name === "NotFoundError") {
+                alert("⚠️ No webcam/microphone found. Check your device settings.");
+            } else {
+                alert("⚠️ Unknown error: " + error.message);
+            }
+    
+            throw error; // Stop execution if permission is denied
+        }
+    };
+    
+    // Call getLocalStream() before setting up PeerConnection
     const startCall = async () => {
         if (!callTo) {
-            alert("⚠️ Please enter the username to call.");
+            alert("⚠️ Enter a username to call.");
             return;
         }
-
+    
         const pc = createPeerConnection(callTo);
         setPeerConnection(pc);
-
+    
         try {
-            localStream.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            localVideoRef.current.srcObject = localStream.current;
-
+            localStream.current = await getLocalStream();
             localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
-
+    
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-
+    
             socketRef.current.send(JSON.stringify({ type: "offer", offer, target: callTo }));
         } catch (error) {
-            console.error("🚨 Error accessing webcam/microphone:", error);
-            alert("⚠️ Error accessing webcam/microphone. Please allow camera permissions.");
+            console.log("❌ Call initialization failed:", error);
         }
     };
-
+    
     const handleOffer = async (offer, name) => {
-        console.log("📞 Received offer from:", name);
-
         const pc = createPeerConnection(name);
         setPeerConnection(pc);
-
-        localStream.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideoRef.current.srcObject = localStream.current;
-        localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
-
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        socketRef.current.send(JSON.stringify({ type: "answer", answer, target: name }));
+    
+        try {
+            localStream.current = await getLocalStream();
+            localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
+    
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+    
+            socketRef.current.send(JSON.stringify({ type: "answer", answer, target: name }));
+        } catch (error) {
+            console.log("❌ Handling offer failed:", error);
+        }
     };
-
+    
     return (
         <div style={{ textAlign: "center" }}>
             <h2>WebRTC Video Call</h2>
