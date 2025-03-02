@@ -6,10 +6,11 @@ const VideoCall = () => {
     const [registered, setRegistered] = useState(false);
     const [socket, setSocket] = useState(null);
     const [peerConnection, setPeerConnection] = useState(null);
+    
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
     const localStream = useRef(null);
-    const remoteStream = useRef(null);
+    const remoteStream = useRef(new MediaStream()); // Ensure remoteStream exists
 
     useEffect(() => {
         const ws = new WebSocket("wss://api.abiv.in");
@@ -18,25 +19,26 @@ const VideoCall = () => {
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             switch (data.type) {
-                case "candidate":
-                    console.log("🔗 Adding ICE Candidate:", data.candidate);
-                    peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                    break;
                 case "register":
-                    console.log("Registration successful");
+                    console.log("✅ Registration successful");
                     setRegistered(true);
                     break;
                 case "offer":
                     handleOffer(data.offer, data.name);
                     break;
                 case "answer":
-                    peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    if (peerConnection) {
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    }
                     break;
                 case "candidate":
-                    peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    if (peerConnection) {
+                        console.log("🔗 Adding ICE Candidate:", data.candidate);
+                        peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
                     break;
                 default:
-                    break;
+                    console.log("⚠️ Unknown message type:", data);
             }
         };
 
@@ -48,26 +50,25 @@ const VideoCall = () => {
             socket.send(JSON.stringify({ type: "register", name: username }));
         }
     };
+
     const startCall = async () => {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert("❌ getUserMedia is not supported in this browser. Try Chrome or Firefox.");
+        if (!callTo) {
+            alert("⚠️ Enter the username to call.");
             return;
         }
-    
-        try {
-            localStream.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    
-            console.log("🎥 Local stream obtained:", localStream.current);
-            localVideoRef.current.srcObject = localStream.current;
-    
-            localStream.current.getTracks().forEach(track => peerConnection.addTrack(track, localStream.current));
-        } catch (error) {
-            console.error("🚨 Error accessing webcam/microphone:", error);
-            alert("⚠️ Error accessing webcam/microphone. Please allow camera permissions.");
-        }
+
+        const pc = createPeerConnection(callTo);
+        setPeerConnection(pc);
+
+        localStream.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideoRef.current.srcObject = localStream.current;
+        localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        socket.send(JSON.stringify({ type: "offer", offer, target: callTo }));
     };
-    
-    
 
     const createPeerConnection = (target) => {
         const pc = new RTCPeerConnection({
@@ -81,31 +82,18 @@ const VideoCall = () => {
                 }
             ]
         });
-        
-        
+
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                console.log("📡 Sending ICE Candidate:", event.candidate);
                 socket.send(JSON.stringify({ type: "candidate", candidate: event.candidate, target }));
             }
         };
-        
-        
+
         pc.ontrack = (event) => {
             console.log("📡 Received Remote Stream:", event.streams[0]);
-        
-            if (!remoteStream.current) {
-                remoteStream.current = new MediaStream();
-            }
-        
-            event.streams[0].getTracks().forEach(track => {
-                console.log("🎤 Adding track to remote stream:", track);
-                remoteStream.current.addTrack(track);
-            });
-        
+            event.streams[0].getTracks().forEach(track => remoteStream.current.addTrack(track));
             remoteVideoRef.current.srcObject = remoteStream.current;
         };
-        
 
         return pc;
     };
