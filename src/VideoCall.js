@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { io } from "socket.io-client";
 
 const VideoCall = () => {
     const [username, setUsername] = useState("");
@@ -11,61 +12,44 @@ const VideoCall = () => {
     const localStreamRef = useRef(null);
 
     useEffect(() => {
-        socketRef.current = new WebSocket("ws://api.abiv.in");
+        socketRef.current = io("https://api.abiv.in");
 
-        socketRef.current.onopen = () => console.log("✅ WebSocket Connected");
-        socketRef.current.onclose = () => console.log("❌ WebSocket Disconnected");
-        socketRef.current.onerror = (error) => console.error("⚠️ WebSocket Error:", error);
-
-        socketRef.current.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
-            console.log("📩 Message received:", data);
-
-            switch (data.type) {
-                case "register":
-                    console.log("✅ Registration successful");
-                    setRegistered(true);
-                    break;
-                case "offer":
-                    handleOffer(data.offer, data.name);
-                    break;
-                case "answer":
-                    if (peerConnectionRef.current) {
-                        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-                    }
-                    break;
-                case "candidate":
-                    if (peerConnectionRef.current) {
-                        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-                    }
-                    break;
-                default:
-                    console.warn("⚠️ Unknown message type:", data.type);
-                    break;
+        socketRef.current.on("register", (data) => {
+            if (data.success) {
+                console.log("✅ Registration successful");
+                setRegistered(true);
             }
-        };
+        });
 
-        return () => {
-            if (socketRef.current) {
-                socketRef.current.close();
+        socketRef.current.on("offer", async ({ from, offer }) => {
+            console.log(`📞 Incoming call from ${from}`);
+            handleOffer(offer, from);
+        });
+
+        socketRef.current.on("answer", async ({ answer }) => {
+            if (peerConnectionRef.current) {
+                await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
             }
-        };
+        });
+
+        socketRef.current.on("candidate", async ({ candidate }) => {
+            if (peerConnectionRef.current) {
+                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        });
+
+        return () => socketRef.current.disconnect();
     }, []);
 
     const registerUser = () => {
         if (socketRef.current && username) {
-            socketRef.current.send(JSON.stringify({ type: "register", name: username }));
+            socketRef.current.emit("register", username);
         }
     };
 
     const startCall = async () => {
         if (!callTo) {
             alert("⚠️ Enter a username to call.");
-            return;
-        }
-
-        if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-            alert("❌ WebSocket is not connected. Try refreshing.");
             return;
         }
 
@@ -78,14 +62,14 @@ const VideoCall = () => {
             const offer = await peerConnectionRef.current.createOffer();
             await peerConnectionRef.current.setLocalDescription(offer);
 
-            socketRef.current.send(JSON.stringify({ type: "offer", offer, target: callTo }));
+            socketRef.current.emit("call", { from: username, to: callTo, offer });
         } catch (error) {
             console.error("❌ Call initialization failed:", error);
         }
     };
 
-    const handleOffer = async (offer, name) => {
-        peerConnectionRef.current = createPeerConnection(name);
+    const handleOffer = async (offer, from) => {
+        peerConnectionRef.current = createPeerConnection(from);
 
         try {
             localStreamRef.current = await getLocalStream();
@@ -95,7 +79,7 @@ const VideoCall = () => {
             const answer = await peerConnectionRef.current.createAnswer();
             await peerConnectionRef.current.setLocalDescription(answer);
 
-            socketRef.current.send(JSON.stringify({ type: "answer", answer, target: name }));
+            socketRef.current.emit("answer", { from: username, to: from, answer });
         } catch (error) {
             console.error("❌ Handling offer failed:", error);
         }
@@ -115,17 +99,12 @@ const VideoCall = () => {
         });
 
         pc.onicecandidate = (event) => {
-            if (event.candidate && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-                console.log("📡 Sending ICE Candidate:", event.candidate);
-                socketRef.current.send(JSON.stringify({ type: "candidate", candidate: event.candidate, target }));
-            } else {
-                console.warn("⚠️ WebSocket is not ready. ICE Candidate not sent.");
+            if (event.candidate) {
+                socketRef.current.emit("candidate", { from: username, to: target, candidate: event.candidate });
             }
         };
 
         pc.ontrack = (event) => {
-            console.log("📡 Received Remote Stream:", event.streams[0]);
-
             if (remoteVideoRef.current) {
                 remoteVideoRef.current.srcObject = event.streams[0];
             }
