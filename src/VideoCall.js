@@ -12,7 +12,7 @@ const VideoCall = () => {
     const remoteStream = useRef(null);
 
     useEffect(() => {
-        const ws = new WebSocket("ws://192.168.29.8:3001");
+        const ws = new WebSocket("wss://api.abiv.in");
         setSocket(ws);
 
         ws.onmessage = (event) => {
