@@ -5,66 +5,99 @@ const VideoCall = () => {
     const [callTo, setCallTo] = useState("");
     const [registered, setRegistered] = useState(false);
     const socketRef = useRef(null);
-    const [peerConnection, setPeerConnection] = useState(null);
-
+    const peerConnectionRef = useRef(null);
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
-    const localStream = useRef(null);
-    const remoteStream = useRef(new MediaStream());
+    const localStreamRef = useRef(null);
 
     useEffect(() => {
-        if (!socketRef.current) {
-            const ws = new WebSocket("wss://api.abiv.in");
-            socketRef.current = ws;
+        socketRef.current = new WebSocket("ws://api.abiv.in");
 
-            ws.onmessage = async (event) => {
-                const data = JSON.parse(event.data);
-                console.log("📩 Received Message:", data);
+        socketRef.current.onopen = () => console.log("✅ WebSocket Connected");
+        socketRef.current.onclose = () => console.log("❌ WebSocket Disconnected");
+        socketRef.current.onerror = (error) => console.error("⚠️ WebSocket Error:", error);
 
-                switch (data.type) {
-                    case "register":
-                        setRegistered(true);
-                        console.log("✅ Registration Successful");
-                        break;
-                    case "offer":
-                        await handleOffer(data.offer, data.name);
-                        break;
-                    case "answer":
-                        if (peerConnection) {
-                            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-                        }
-                        break;
-                    case "candidate":
-                        if (peerConnection) {
-                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        }
-                        break;
-                    default:
-                        console.log("⚠️ Unknown Message Type:", data.type);
-                }
-            };
+        socketRef.current.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+            console.log("📩 Message received:", data);
 
-            ws.onclose = () => {
-                console.warn("⚠️ WebSocket Disconnected. Reconnecting...");
-                socketRef.current = null;
-                setTimeout(() => {
-                    if (!socketRef.current) {
+            switch (data.type) {
+                case "register":
+                    console.log("✅ Registration successful");
+                    setRegistered(true);
+                    break;
+                case "offer":
+                    handleOffer(data.offer, data.name);
+                    break;
+                case "answer":
+                    if (peerConnectionRef.current) {
+                        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
                     }
-                }, 3000);
-            };
-        }
+                    break;
+                case "candidate":
+                    if (peerConnectionRef.current) {
+                        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                    break;
+                default:
+                    console.warn("⚠️ Unknown message type:", data.type);
+                    break;
+            }
+        };
 
         return () => {
             if (socketRef.current) {
                 socketRef.current.close();
-                socketRef.current = null;
             }
         };
-    }, [peerConnection]);
+    }, []);
 
     const registerUser = () => {
         if (socketRef.current && username) {
             socketRef.current.send(JSON.stringify({ type: "register", name: username }));
+        }
+    };
+
+    const startCall = async () => {
+        if (!callTo) {
+            alert("⚠️ Enter a username to call.");
+            return;
+        }
+
+        if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+            alert("❌ WebSocket is not connected. Try refreshing.");
+            return;
+        }
+
+        peerConnectionRef.current = createPeerConnection(callTo);
+
+        try {
+            localStreamRef.current = await getLocalStream();
+            localStreamRef.current.getTracks().forEach(track => peerConnectionRef.current.addTrack(track, localStreamRef.current));
+
+            const offer = await peerConnectionRef.current.createOffer();
+            await peerConnectionRef.current.setLocalDescription(offer);
+
+            socketRef.current.send(JSON.stringify({ type: "offer", offer, target: callTo }));
+        } catch (error) {
+            console.error("❌ Call initialization failed:", error);
+        }
+    };
+
+    const handleOffer = async (offer, name) => {
+        peerConnectionRef.current = createPeerConnection(name);
+
+        try {
+            localStreamRef.current = await getLocalStream();
+            localStreamRef.current.getTracks().forEach(track => peerConnectionRef.current.addTrack(track, localStreamRef.current));
+
+            await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnectionRef.current.createAnswer();
+            await peerConnectionRef.current.setLocalDescription(answer);
+
+            socketRef.current.send(JSON.stringify({ type: "answer", answer, target: name }));
+        } catch (error) {
+            console.error("❌ Handling offer failed:", error);
         }
     };
 
@@ -82,20 +115,20 @@ const VideoCall = () => {
         });
 
         pc.onicecandidate = (event) => {
-            if (event.candidate) {
+            if (event.candidate && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
                 console.log("📡 Sending ICE Candidate:", event.candidate);
                 socketRef.current.send(JSON.stringify({ type: "candidate", candidate: event.candidate, target }));
+            } else {
+                console.warn("⚠️ WebSocket is not ready. ICE Candidate not sent.");
             }
         };
 
         pc.ontrack = (event) => {
             console.log("📡 Received Remote Stream:", event.streams[0]);
 
-            event.streams[0].getTracks().forEach(track => {
-                remoteStream.current.addTrack(track);
-            });
-
-            remoteVideoRef.current.srcObject = remoteStream.current;
+            if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = event.streams[0];
+            }
         };
 
         return pc;
@@ -104,15 +137,15 @@ const VideoCall = () => {
     const getLocalStream = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    
+
             if (localVideoRef.current) {
                 localVideoRef.current.srcObject = stream;
             }
-    
+
             return stream;
         } catch (error) {
             console.error("🚨 Camera/Microphone Error:", error);
-    
+
             if (error.name === "NotAllowedError") {
                 alert("⚠️ Camera/Microphone access denied. Please allow permissions.");
             } else if (error.name === "NotFoundError") {
@@ -120,52 +153,11 @@ const VideoCall = () => {
             } else {
                 alert("⚠️ Unknown error: " + error.message);
             }
-    
-            throw error; // Stop execution if permission is denied
+
+            throw error;
         }
     };
-    
-    // Call getLocalStream() before setting up PeerConnection
-    const startCall = async () => {
-        if (!callTo) {
-            alert("⚠️ Enter a username to call.");
-            return;
-        }
-    
-        const pc = createPeerConnection(callTo);
-        setPeerConnection(pc);
-    
-        try {
-            localStream.current = await getLocalStream();
-            localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
-    
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-    
-            socketRef.current.send(JSON.stringify({ type: "offer", offer, target: callTo }));
-        } catch (error) {
-            console.log("❌ Call initialization failed:", error);
-        }
-    };
-    
-    const handleOffer = async (offer, name) => {
-        const pc = createPeerConnection(name);
-        setPeerConnection(pc);
-    
-        try {
-            localStream.current = await getLocalStream();
-            localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
-    
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-    
-            socketRef.current.send(JSON.stringify({ type: "answer", answer, target: name }));
-        } catch (error) {
-            console.log("❌ Handling offer failed:", error);
-        }
-    };
-    
+
     return (
         <div style={{ textAlign: "center" }}>
             <h2>WebRTC Video Call</h2>
@@ -183,7 +175,7 @@ const VideoCall = () => {
             )}
 
             <div style={{ marginTop: "20px" }}>
-                <video ref={localVideoRef} autoPlay playsInline style={{ width: "45%", marginRight: "10px" }} />
+                <video ref={localVideoRef} autoPlay playsInline muted style={{ width: "45%", marginRight: "10px" }} />
                 <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "45%" }} />
             </div>
         </div>
