@@ -17,7 +17,7 @@ const VideoCall = () => {
             const ws = new WebSocket("wss://api.abiv.in");
             socketRef.current = ws;
 
-            ws.onmessage = (event) => {
+            ws.onmessage = async (event) => {
                 const data = JSON.parse(event.data);
                 console.log("📩 Received Message:", data);
 
@@ -27,18 +27,20 @@ const VideoCall = () => {
                         console.log("✅ Registration Successful");
                         break;
                     case "offer":
-                        handleOffer(data.offer, data.name);  // Ensure this function exists
+                        await handleOffer(data.offer, data.name);
                         break;
                     case "answer":
                         if (peerConnection) {
-                            peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
                         }
                         break;
                     case "candidate":
                         if (peerConnection) {
-                            peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
                         }
                         break;
+                    default:
+                        console.log("⚠️ Unknown Message Type:", data.type);
                 }
             };
 
@@ -91,7 +93,6 @@ const VideoCall = () => {
             console.log("📡 Received Remote Stream:", event.streams[0]);
 
             event.streams[0].getTracks().forEach(track => {
-                console.log("🎤 Adding track to remote stream:", track);
                 remoteStream.current.addTrack(track);
             });
 
@@ -101,9 +102,34 @@ const VideoCall = () => {
         return pc;
     };
 
+    const startCall = async () => {
+        if (!callTo) {
+            alert("⚠️ Please enter the username to call.");
+            return;
+        }
+
+        const pc = createPeerConnection(callTo);
+        setPeerConnection(pc);
+
+        try {
+            localStream.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideoRef.current.srcObject = localStream.current;
+
+            localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            socketRef.current.send(JSON.stringify({ type: "offer", offer, target: callTo }));
+        } catch (error) {
+            console.error("🚨 Error accessing webcam/microphone:", error);
+            alert("⚠️ Error accessing webcam/microphone. Please allow camera permissions.");
+        }
+    };
+
     const handleOffer = async (offer, name) => {
         console.log("📞 Received offer from:", name);
-        
+
         const pc = createPeerConnection(name);
         setPeerConnection(pc);
 
@@ -121,6 +147,7 @@ const VideoCall = () => {
     return (
         <div style={{ textAlign: "center" }}>
             <h2>WebRTC Video Call</h2>
+
             {!registered ? (
                 <div>
                     <input type="text" placeholder="Enter your name" onChange={(e) => setUsername(e.target.value)} />
@@ -129,9 +156,14 @@ const VideoCall = () => {
             ) : (
                 <div>
                     <input type="text" placeholder="User to call" onChange={(e) => setCallTo(e.target.value)} />
-                    <button onClick={() => console.log("Start Call Logic Here")}>Call</button>
+                    <button onClick={startCall}>Call</button>
                 </div>
             )}
+
+            <div style={{ marginTop: "20px" }}>
+                <video ref={localVideoRef} autoPlay playsInline style={{ width: "45%", marginRight: "10px" }} />
+                <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "45%" }} />
+            </div>
         </div>
     );
 };
