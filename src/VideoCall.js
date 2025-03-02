@@ -4,7 +4,7 @@ const VideoCall = () => {
     const [username, setUsername] = useState("");
     const [callTo, setCallTo] = useState("");
     const [registered, setRegistered] = useState(false);
-    const socketRef = useRef(null); // Keep socket persistent
+    const socketRef = useRef(null);
     const [peerConnection, setPeerConnection] = useState(null);
 
     const localVideoRef = useRef(null);
@@ -27,7 +27,7 @@ const VideoCall = () => {
                         console.log("✅ Registration Successful");
                         break;
                     case "offer":
-                        handleOffer(data.offer, data.name);
+                        handleOffer(data.offer, data.name);  // Ensure this function exists
                         break;
                     case "answer":
                         if (peerConnection) {
@@ -59,12 +59,63 @@ const VideoCall = () => {
                 socketRef.current = null;
             }
         };
-    }, [peerConnection]); // Keep socket persistent
+    }, [peerConnection]);
 
     const registerUser = () => {
         if (socketRef.current && username) {
             socketRef.current.send(JSON.stringify({ type: "register", name: username }));
         }
+    };
+
+    const createPeerConnection = (target) => {
+        const pc = new RTCPeerConnection({
+            iceServers: [
+                { urls: "stun:stun.l.google.com:19302" },
+                { urls: "stun:stun1.l.google.com:19302" },
+                {
+                    urls: "turn:relay.metered.ca:80",
+                    username: "open",
+                    credential: "open"
+                }
+            ]
+        });
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                console.log("📡 Sending ICE Candidate:", event.candidate);
+                socketRef.current.send(JSON.stringify({ type: "candidate", candidate: event.candidate, target }));
+            }
+        };
+
+        pc.ontrack = (event) => {
+            console.log("📡 Received Remote Stream:", event.streams[0]);
+
+            event.streams[0].getTracks().forEach(track => {
+                console.log("🎤 Adding track to remote stream:", track);
+                remoteStream.current.addTrack(track);
+            });
+
+            remoteVideoRef.current.srcObject = remoteStream.current;
+        };
+
+        return pc;
+    };
+
+    const handleOffer = async (offer, name) => {
+        console.log("📞 Received offer from:", name);
+        
+        const pc = createPeerConnection(name);
+        setPeerConnection(pc);
+
+        localStream.current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideoRef.current.srcObject = localStream.current;
+        localStream.current.getTracks().forEach(track => pc.addTrack(track, localStream.current));
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        socketRef.current.send(JSON.stringify({ type: "answer", answer, target: name }));
     };
 
     return (
