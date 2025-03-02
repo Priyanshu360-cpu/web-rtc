@@ -49,7 +49,6 @@ const VideoCall = () => {
                 socketRef.current = null;
                 setTimeout(() => {
                     if (!socketRef.current) {
-                        window.location.reload();
                     }
                 }, 3000);
             };
